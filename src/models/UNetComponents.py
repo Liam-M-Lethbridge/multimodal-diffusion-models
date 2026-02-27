@@ -3,26 +3,40 @@ from keras import layers, models
 
 
 class ConvBlock(layers.Layer):
-    """Convolution block class. Each block consists of a convolution layer, batch norm and relu activation twice."""
+    """Convolution block class. Each block consists of a convolution layer, batch norm, time embedding, and relu activation twice."""
     def __init__(self, filters, kernel_size=3):
         super().__init__()
+
+        self.filters = filters
+
         self.conv1 = layers.Conv2D(filters, kernel_size, padding="same")
-        self.bn1 = layers.BatchNormalization()
-        self.relu1 = layers.ReLU()
+        self.norm1 = layers.GroupNormalization()
+        self.time_embedder = layers.Dense(filters)
 
         self.conv2 = layers.Conv2D(filters, kernel_size, padding="same")
-        self.bn2 = layers.BatchNormalization()
-        self.relu2 = layers.ReLU()
+        self.norm2 = layers.GroupNormalization()
 
-    def call(self, x, training=False):
+        self.activation = layers.Activation("swish")
+
+    def call(self, x, t, training=False):
+        input_tensor = x
+        # first convolution
         x = self.conv1(x)
-        x = self.bn1(x, training=training)
-        x = self.relu1(x)
+        x = self.norm1(x, training=training)
+        x = self.activation(x)
 
+        # inject time embedding
+        te = self.time_embedder(t)  # (B, filters)
+        te = te[:, None, None, :]     # broadcast to (B, 1, 1, filters)
+        x = x + te
+        
+        # second convolution
         x = self.conv2(x)
-        x = self.bn2(x, training=training)
-        x = self.relu2(x)
-        return x
+        x = self.norm2(x, training=training)
+        x = self.activation(x)
+
+        # residual connection
+        return x + input_tensor
 
 class EncoderBlock(layers.Layer):
     """Encoder block class. Consists of convolution block and pooling layer to shrink the image but increase the channels."""
@@ -31,8 +45,8 @@ class EncoderBlock(layers.Layer):
         self.conv = ConvBlock(filters)
         self.pool = layers.MaxPooling2D((2, 2))
 
-    def call(self, x, training=False):
-        f = self.conv(x, training=training)
+    def call(self, x, t, training=False):
+        f = self.conv(x, t, training=training)
         p = self.pool(f)
         return f, p
 
@@ -46,27 +60,14 @@ class DecoderBlock(layers.Layer):
         self.concat = layers.Concatenate()
         self.conv = ConvBlock(filters)
 
-    def call(self, x, skip, training=False):
+    def call(self, x, skip, t, training=False):
         x = self.up(x)
         x = self.concat([x, skip])
-        x = self.conv(x, training=training)
+        x = self.conv(x, t, training=training)
         return x
 
 
-class TimeEmbedding(tf.keras.layers.Layer):
-    """Time embedding class. Used for embedding time step information into the diffusion model"""
-    def __init__(self, dim):
-        super().__init__()
-        self.dim = dim
 
-    def call(self, t):
-        half = self.dim // 2
-        freqs = tf.exp(
-            -tf.math.log(10000.0) * tf.range(half, dtype=tf.float32) / half
-        )
-        args = t[:, None] * freqs[None]
-        emb = tf.concat([tf.sin(args), tf.cos(args)], axis=-1)
-        return emb
 
 class CondEncoder(tf.keras.layers.Layer):
     def __init__(self, base=64):
@@ -75,19 +76,19 @@ class CondEncoder(tf.keras.layers.Layer):
         self.conv2 = ConvBlock(base * 2)
         self.conv3 = ConvBlock(base * 4)
 
-    def call(self, x, training=False):
-        x = self.conv1(x, training)
-        x = tf.keras.layers.MaxPooling2D()(x)
-        x = self.conv2(x, training)
-        x = tf.keras.layers.MaxPooling2D()(x)
-        x = self.conv3(x, training)
+    def call(self, x, t, training=False):
+        x = self.conv1(x, t, training)
+        x = layers.MaxPooling2D()(x)
+        x = self.conv2(x, t, training)
+        x = layers.MaxPooling2D()(x)
+        x = self.conv3(x, t, training)
         return x  # (B, H/4, W/4, C)
     
 class CrossAttention(tf.keras.layers.Layer):
     def __init__(self, channels, num_heads=4):
         super().__init__()
-        self.norm = tf.keras.layers.LayerNormalization()
-        self.attn = tf.keras.layers.MultiHeadAttention(
+        self.norm = layers.LayerNormalization()
+        self.attn = layers.MultiHeadAttention(
             num_heads=num_heads, key_dim=channels // num_heads
         )
 
@@ -116,9 +117,9 @@ class AttentionDecoderBlock(tf.keras.layers.Layer):
         self.conv = ConvBlock(filters)
         self.attn = CrossAttention(filters)
 
-    def call(self, x, skip, cond, training=False):
+    def call(self, x, skip, cond, t, training=False):
         x = self.up(x)
         x = tf.concat([x, skip], axis=-1)
-        x = self.conv(x, training)
+        x = self.conv(x, t, training)
         x = self.attn(x, cond, training)
         return x
