@@ -4,3 +4,4 @@ src/data_pulling/
 trained_models/
 src/__pycache__/
 .env
+tfenv

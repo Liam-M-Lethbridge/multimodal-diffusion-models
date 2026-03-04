@@ -1,6 +1,25 @@
 import tensorflow as tf
 from keras import layers, models
 
+def timestep_embedding(t, dim):
+    """
+    Create sinusoidal timestep embeddings.
+    t: (B,) int32
+    dim: embedding dimension
+    """
+
+    half_dim = dim // 2
+    freqs = tf.exp(
+        -tf.math.log(10000.0) * tf.range(0, half_dim, dtype=tf.float32) / half_dim
+    )
+
+    t = tf.cast(t, tf.float32)
+    args = tf.expand_dims(t, 1) * tf.expand_dims(freqs, 0)
+
+    embedding = tf.concat([tf.sin(args), tf.cos(args)], axis=-1)
+
+    return embedding
+
 
 class ConvBlock(layers.Layer):
     """Convolution block class. Each block consists of a convolution layer, batch norm, time embedding, and relu activation twice."""
@@ -11,6 +30,7 @@ class ConvBlock(layers.Layer):
 
         self.conv1 = layers.Conv2D(filters, kernel_size, padding="same")
         self.norm1 = layers.GroupNormalization()
+
         self.time_embedder = layers.Dense(filters)
 
         self.conv2 = layers.Conv2D(filters, kernel_size, padding="same")
@@ -18,16 +38,24 @@ class ConvBlock(layers.Layer):
 
         self.activation = layers.Activation("swish")
 
+        self.projection = layers.Conv2D(filters, 1, padding="same")
+
     def call(self, x, t, training=False):
         input_tensor = x
+
+        # need to project if the dimensions are not the same
+        if input_tensor.shape[-1] != self.filters:
+            input_tensor = self.projection(input_tensor)
+
         # first convolution
         x = self.conv1(x)
         x = self.norm1(x, training=training)
         x = self.activation(x)
 
         # inject time embedding
-        te = self.time_embedder(t)  # (B, filters)
-        te = te[:, None, None, :]     # broadcast to (B, 1, 1, filters)
+        te = timestep_embedding(t, self.filters)
+        te = self.time_embedder(te)  
+        te = te[:, None, None, :]     
         x = x + te
         
         # second convolution
@@ -77,12 +105,12 @@ class CondEncoder(tf.keras.layers.Layer):
         self.conv3 = ConvBlock(base * 4)
 
     def call(self, x, t, training=False):
-        x = self.conv1(x, t, training)
+        x = self.conv1(x, t, training=training)
         x = layers.MaxPooling2D()(x)
-        x = self.conv2(x, t, training)
+        x = self.conv2(x, t, training=training)
         x = layers.MaxPooling2D()(x)
-        x = self.conv3(x, t, training)
-        return x  # (B, H/4, W/4, C)
+        x = self.conv3(x, t, training=training)
+        return x  
     
 class CrossAttention(tf.keras.layers.Layer):
     def __init__(self, channels, num_heads=4):
@@ -120,6 +148,6 @@ class AttentionDecoderBlock(tf.keras.layers.Layer):
     def call(self, x, skip, cond, t, training=False):
         x = self.up(x)
         x = tf.concat([x, skip], axis=-1)
-        x = self.conv(x, t, training)
-        x = self.attn(x, cond, training)
+        x = self.conv(x, t, training=training)
+        x = self.attn(x, cond, training=training)
         return x

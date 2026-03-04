@@ -1,6 +1,6 @@
 import tensorflow as tf
 from keras import layers, models
-from UNetComponents import ConvBlock, EncoderBlock, DecoderBlock, AttentionDecoderBlock
+from models.UNetComponents import ConvBlock, EncoderBlock, DecoderBlock, AttentionDecoderBlock
 
 
 class UNet(tf.keras.Model):
@@ -95,8 +95,9 @@ class DiffUNet(tf.keras.Model):
 class DiffUNetCrossAttention(tf.keras.Model):
     """U-net model class for diffusion using cross attention. Combines encoder and decoders in U-net architecture and performs skips. 
 """
-    def __init__(self, input_channels=3, num_classes=9):
+    def __init__(self, model_name:str, num_classes=10):
         super().__init__()
+        self.model_name = model_name
         self.num_classes = num_classes
 
         # Encoder
@@ -139,3 +140,19 @@ class DiffUNetCrossAttention(tf.keras.Model):
         d3 = self.decoder3(d2, skip1, cond, t, training=training)
 
         return self.outputlayer(d3)
+
+
+    def checkpoint(self, epoch_number: int):
+        """This method checkpoints the model:
+        epoch_number: the number of epochs.
+        """
+        checkpt = tf.train.Checkpoint(step=tf.Variable(1), net=self)
+        checkpt.save(f"trained_models/{self.model_name}/epoch_{epoch_number}")
+
+
+    def load_checkpoint(self, epoch_number: int):
+        """This method loads a checkpoints for the model:
+        epoch_number: the number of epochs.
+        """
+        checkpt = tf.train.Checkpoint(step=tf.Variable(1), net=self)
+        checkpt.restore(f"trained_models/{self.model_name}/epoch_{epoch_number}")
